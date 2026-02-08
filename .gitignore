@@ -27,8 +27,13 @@ Thumbs.db
 detection_log.json
 *.log
 
-# Model files (if any)
+# Data directory (database, cache, attendance exports)
+data/
+
+# Model files
 *.pkl
 *.h5
 *.model
 
+# Config overrides (keep config.yaml, ignore local overrides)
+config.local.yaml

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Attendance{% endblock %}
+{% block content %}
+<h1 style="margin-bottom: 1.5rem;">Attendance</h1>
+
+<div class="card">
+    <h2>Select Date</h2>
+    <form action="/attendance" method="GET">
+        <input type="date" name="date" value="{{ date }}">
+        <button type="submit" class="btn">View</button>
+        <a href="/attendance/export?date={{ date }}" class="btn btn-outline">Export CSV</a>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Records for {{ date }}</h2>
+    {% if records %}
+    <table>
+        <thead>
+            <tr><th>Name</th><th>Check In</th><th>Check Out</th></tr>
+        </thead>
+        <tbody>
+            {% for r in records %}
+            <tr>
+                <td>{{ r.name }}</td>
+                <td>{{ r.check_in[:19] if r.check_in else '' }}</td>
+                <td>{{ r.check_out[:19] if r.check_out else 'Present' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#aaa;">No attendance records for this date.</p>
+    {% endif %}
+</div>
+{% endblock %}

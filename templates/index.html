@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Face Recognition{% endblock %}
+{% block content %}
+<h1 style="margin-bottom: 1.5rem;">Dashboard</h1>
+
+<div class="grid">
+    <div class="card stat-card">
+        <div class="number">{{ stats.get('persons', 0) }}</div>
+        <div class="label">Registered People</div>
+    </div>
+    <div class="card stat-card">
+        <div class="number">{{ stats.get('detections_today', 0) }}</div>
+        <div class="label">Detections Today</div>
+    </div>
+    <div class="card stat-card">
+        <div class="number">{{ stats.get('attendance_today', 0) }}</div>
+        <div class="label">Attendance Today</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Live Feed</h2>
+    <div class="video-container">
+        <img src="{{ url_for('video_feed') }}" alt="Live Feed">
+    </div>
+</div>
+{% endblock %}

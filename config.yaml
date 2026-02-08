@@ -1,0 +1,56 @@
+# Face Recognition System Configuration
+
+recognition:
+  threshold: 0.6            # Distance threshold (lower = stricter). Range: 0.4-0.7
+  min_face_size: 50         # Minimum face size in pixels
+  model: "hog"              # Detection model: "hog" (CPU) or "cnn" (GPU/CUDA)
+  frame_scale: 0.25         # Frame resize scale for processing speed
+  skip_frames: 2            # Process every Nth frame (1 = every frame)
+
+camera:
+  index: 0                  # Camera device index
+  width: 640                # Capture width
+  height: 480               # Capture height
+
+paths:
+  known_faces_dir: "known_faces"
+  encoding_cache: "data/encodings.pkl"
+  database: "data/face_recognition.db"
+  attendance_dir: "data/attendance"
+  logs_dir: "data/logs"
+
+liveness:
+  enabled: true
+  blink_threshold: 0.25     # Eye aspect ratio threshold for blink detection
+  texture_threshold: 80.0   # LBP texture variance threshold
+  min_blinks: 1             # Minimum blinks to confirm liveness
+  check_interval: 30        # Frames between liveness checks
+
+attendance:
+  enabled: true
+  cooldown_minutes: 30      # Minutes before re-logging same person
+  export_format: "csv"      # Export format: "csv" or "xlsx"
+  auto_export: true         # Auto-export at end of session
+
+notifications:
+  enabled: false
+  unknown_face_alert: true  # Alert on unknown faces
+  email:
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    sender: ""
+    password: ""             # Use app password, not account password
+    recipients: []
+  cooldown_minutes: 5        # Minutes between alerts for same event
+
+web:
+  enabled: false
+  host: "0.0.0.0"
+  port: 5000
+  secret_key: "change-this-to-a-random-secret-key"
+  max_cameras: 4
+
+tracker:
+  enabled: true
+  max_disappeared: 15       # Frames before dropping tracked face
+  max_distance: 75          # Max pixel distance to associate same face

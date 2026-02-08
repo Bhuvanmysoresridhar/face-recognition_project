@@ -1,365 +1,360 @@
 """
-Production-Grade Face Recognition System
-Demonstrates the complete pipeline beyond basic ML
+Enhanced Face Recognition System
+---------------------------------
+Production-grade real-time face recognition with:
+- Multi-image per person support
+- Persistent encoding cache (no re-encoding on restart)
+- Anti-spoofing / liveness detection
+- Face tracking across frames
+- Attendance system with CSV/Excel export
+- SQLite database for detection history
+- Email/SMS alert notifications
+- Flask web dashboard
+- CLI with full configuration control
+- Optional FAISS indexing for large face databases
 """
 
-import face_recognition
 import cv2
-import numpy as np
-import os
+import threading
 from datetime import datetime
-import json
 
-class ProductionFaceRecognition:
-    def __init__(self, known_faces_dir="known_faces", 
-                 threshold=0.6, min_face_size=50):
-        """
-        Initialize face recognition system with production features
-        
-        Args:
-            known_faces_dir: Directory with reference images
-            threshold: Distance threshold for matching (lower = stricter)
-            min_face_size: Minimum face size in pixels
-        """
-        self.known_face_encodings = []
-        self.known_face_names = []
-        self.known_faces_dir = known_faces_dir
-        self.threshold = threshold
-        self.min_face_size = min_face_size
-        
-        # Performance metrics
-        self.detection_log = []
-        
-        # Load known faces
-        self.load_known_faces()
-    
-    def check_image_quality(self, image):
-        """
-        Quality checks before processing
-        
-        Returns: (is_good, reason)
-        """
-        # Check 1: Image too small
-        height, width = image.shape[:2]
-        if height < 100 or width < 100:
-            return False, "Image too small"
-        
-        # Check 2: Blur detection using Laplacian variance
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        if laplacian_var < 100:  # Threshold for blur
-            return False, "Image too blurry"
-        
-        # Check 3: Brightness check
-        brightness = np.mean(gray)
-        if brightness < 50:
-            return False, "Image too dark"
-        if brightness > 200:
-            return False, "Image too bright"
-        
-        return True, "OK"
-    
-    def align_face(self, image, face_location):
-        """
-        Align face for better recognition
-        Uses facial landmarks to normalize pose
-        
-        Args:
-            image: Original image
-            face_location: (top, right, bottom, left) tuple
-            
-        Returns: Aligned face image
-        """
-        # Get facial landmarks
-        face_landmarks = face_recognition.face_landmarks(image, [face_location])
-        
-        if not face_landmarks:
-            return image
-        
-        landmarks = face_landmarks[0]
-        
-        # Get eye positions
-        left_eye = np.mean(landmarks['left_eye'], axis=0)
-        right_eye = np.mean(landmarks['right_eye'], axis=0)
-        
-        # Calculate angle between eyes
-        dy = right_eye[1] - left_eye[1]
-        dx = right_eye[0] - left_eye[0]
-        angle = np.degrees(np.arctan2(dy, dx))
-        
-        # Get center point between eyes
-        eyes_center = ((left_eye[0] + right_eye[0]) / 2,
-                       (left_eye[1] + right_eye[1]) / 2)
-        
-        # Rotate image to align eyes horizontally
-        rotation_matrix = cv2.getRotationMatrix2D(eyes_center, angle, 1.0)
-        aligned = cv2.warpAffine(image, rotation_matrix, 
-                                 (image.shape[1], image.shape[0]))
-        
-        return aligned
-    
-    def load_known_faces(self):
-        """
-        Load known faces with quality checks and augmentation
-        """
-        print("Loading known faces with quality checks...")
-        
-        if not os.path.exists(self.known_faces_dir):
-            os.makedirs(self.known_faces_dir)
-            print(f"Created directory: {self.known_faces_dir}")
+from utils.config import Config
+from utils.database import Database
+from utils.encoding_cache import EncodingCache
+from utils.attendance import AttendanceManager
+from utils.notifications import NotificationManager
+from recognition.engine import FaceRecognitionEngine
+from recognition.liveness import LivenessDetector
+from recognition.tracker import FaceTracker
+
+
+class FaceRecognitionSystem:
+    """Main orchestrator that wires all modules together."""
+
+    def __init__(self, config_path="config.yaml"):
+        self.config = Config(config_path)
+
+        # Core modules
+        self.db = Database(self.config.get("paths", "database"))
+        cache = EncodingCache(self.config.get("paths", "encoding_cache"))
+        self.engine = FaceRecognitionEngine(self.config, encoding_cache=cache, database=self.db)
+        self.liveness = LivenessDetector(self.config)
+        self.tracker = FaceTracker(self.config)
+        self.attendance = AttendanceManager(self.config, self.db)
+        self.notifications = NotificationManager(self.config)
+
+        # Runtime state
+        self._video_capture = None
+        self._latest_frame = None
+        self._running = False
+
+    def run(self, camera_index=None):
+        """Main recognition loop with all production features."""
+        if camera_index is None:
+            camera_index = self.config.get("camera", "index", default=0)
+
+        cap = self._open_camera(camera_index)
+        if cap is None:
             return
-        
-        for filename in os.listdir(self.known_faces_dir):
-            if filename.endswith((".jpg", ".jpeg", ".png")):
-                image_path = os.path.join(self.known_faces_dir, filename)
-                image = cv2.imread(image_path)
-                
-                # Quality check
-                is_good, reason = self.check_image_quality(image)
-                if not is_good:
-                    print(f"Skipping {filename}: {reason}")
-                    continue
-                
-                # Convert to RGB
-                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                
-                # Detect face
-                face_locations = face_recognition.face_locations(rgb_image)
-                
-                if len(face_locations) == 0:
-                    print(f"No face found in {filename}")
-                    continue
-                
-                if len(face_locations) > 1:
-                    print(f"Multiple faces in {filename}, using first one")
-                
-                # Get face encoding
-                face_location = face_locations[0]
-                
-                # Align face for better encoding
-                aligned = self.align_face(rgb_image, face_location)
-                
-                # Generate encoding from aligned face
-                encodings = face_recognition.face_encodings(aligned, [face_location])
-                
-                if len(encodings) > 0:
-                    encoding = encodings[0]
-                    name = os.path.splitext(filename)[0]
-                    
-                    self.known_face_encodings.append(encoding)
-                    self.known_face_names.append(name)
-                    print(f"✓ Loaded: {name}")
-        
-        print(f"Loaded {len(self.known_face_names)} faces successfully")
-    
-    def recognize_face(self, face_encoding):
-        """
-        Recognize face using distance-based matching
-        
-        Returns: (name, confidence, distance)
-        """
-        if len(self.known_face_encodings) == 0:
-            return "Unknown", 0.0, 1.0
-        
-        # Calculate distances to all known faces
-        face_distances = face_recognition.face_distance(
-            self.known_face_encodings, 
-            face_encoding
-        )
-        
-        # Find best match
-        best_match_index = np.argmin(face_distances)
-        min_distance = face_distances[best_match_index]
-        
-        # Check if below threshold
-        if min_distance < self.threshold:
-            name = self.known_face_names[best_match_index]
-            confidence = 1 - min_distance  # Convert to confidence score
-            return name, confidence, min_distance
-        else:
-            return "Unknown", 0.0, min_distance
-    
-    def log_detection(self, name, confidence, timestamp):
-        """
-        Log detection for analytics
-        """
-        log_entry = {
-            "name": name,
-            "confidence": confidence,
-            "timestamp": timestamp.isoformat()
-        }
-        self.detection_log.append(log_entry)
-    
-    def save_logs(self, filename="detection_log.json"):
-        """
-        Save detection logs to file
-        """
-        with open(filename, 'w') as f:
-            json.dump(self.detection_log, f, indent=2)
-        print(f"Logs saved to {filename}")
-    
-    def run(self, camera_index=0):
-        """
-        Main recognition loop with all production features
-        
-        Args:
-            camera_index: Camera index to use (default: 0)
-        """
-        # Try multiple backends for better compatibility
-        backends = [
-            cv2.CAP_ANY,           # Auto-detect
-            cv2.CAP_DSHOW,         # DirectShow (Windows)
-            cv2.CAP_AVFOUNDATION,  # AVFoundation (macOS)
-            cv2.CAP_V4L2,          # Video4Linux (Linux)
-        ]
-        
-        video_capture = None
-        
+        self._video_capture = cap
+
+        rec_cfg = self.config.section("recognition")
+        frame_scale = rec_cfg.get("frame_scale", 0.25)
+        skip_frames = rec_cfg.get("skip_frames", 2)
+        inv_scale = int(1 / frame_scale)
+
+        print(f"\n{'=' * 50}")
+        print("  Face Recognition System Started")
+        print(f"{'=' * 50}")
+        print(f"  Threshold     : {self.engine.threshold}")
+        print(f"  Known people  : {len(self.engine.person_encodings)}")
+        print(f"  Encodings     : {len(self.engine.known_encodings)}")
+        print(f"  Liveness      : {'ON' if self.liveness.enabled else 'OFF'}")
+        print(f"  Tracking      : {'ON' if self.tracker.enabled else 'OFF'}")
+        print(f"  Attendance    : {'ON' if self.attendance.enabled else 'OFF'}")
+        print(f"{'=' * 50}")
+        print("  Controls: q=quit  s=save  r=register  a=attendance")
+        print(f"{'=' * 50}\n")
+
+        self._running = True
+        frame_count = 0
+        process_counter = 0
+        tracked_objects = {}
+
+        import face_recognition as fr
+
+        while self._running:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_count += 1
+            process_counter += 1
+            do_process = process_counter >= skip_frames
+
+            if do_process:
+                process_counter = 0
+                small = cv2.resize(frame, (0, 0), fx=frame_scale, fy=frame_scale)
+                rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+
+                raw_locations = fr.face_locations(rgb_small, model=self.engine.model)
+
+                valid = []
+                for (t, r, b, l) in raw_locations:
+                    if (r - l) * inv_scale >= self.engine.min_face_size and \
+                       (b - t) * inv_scale >= self.engine.min_face_size:
+                        valid.append((t, r, b, l))
+
+                encodings = fr.face_encodings(rgb_small, valid)
+
+                names, confs = [], []
+                for enc in encodings:
+                    name, conf, dist = self.engine.recognize_face(enc)
+                    names.append(name)
+                    confs.append(conf)
+
+                # Scale locations to full frame
+                face_locations = [(t * inv_scale, r * inv_scale, b * inv_scale, l * inv_scale)
+                                  for (t, r, b, l) in valid]
+
+                tracked_objects = self.tracker.update(face_locations, names, confs)
+
+                # Log and attend
+                for name, conf in zip(names, confs):
+                    if name != "Unknown":
+                        self.db.log_detection(name, conf, camera_index=camera_index)
+                        self.attendance.mark_attendance(name, conf)
+                    elif self.notifications.enabled:
+                        self.notifications.alert_unknown_face(camera_index)
+
+                # Liveness checks
+                if self.liveness.enabled:
+                    for obj_id, (bbox, name, conf) in list(tracked_objects.items()):
+                        result = self.liveness.check_liveness(frame, bbox, face_id=str(obj_id))
+                        if not result["is_live"] and name != "Unknown":
+                            tracked_objects[obj_id] = (bbox, f"{name}[SPOOF?]", conf)
+
+            # Draw results
+            for obj_id, (bbox, name, conf) in tracked_objects.items():
+                top, right, bottom, left = bbox
+                is_spoof = "[SPOOF?]" in name
+                is_unknown = name == "Unknown"
+
+                if is_spoof:
+                    color = (0, 165, 255)  # orange
+                elif is_unknown:
+                    color = (0, 0, 255)    # red
+                else:
+                    color = (0, 255, 0)    # green
+
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                label = "Unknown" if is_unknown else f"{name} ({conf:.0%})"
+
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.6, 1)
+                cv2.rectangle(frame, (left, bottom - th - 12),
+                              (left + tw + 12, bottom), color, cv2.FILLED)
+                cv2.putText(frame, label, (left + 6, bottom - 6),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
+                cv2.putText(frame, f"ID:{obj_id}", (left, top - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
+            # Overlay
+            info = f"Faces: {len(tracked_objects)} | Frame: {frame_count}"
+            if self.liveness.enabled:
+                info += " | Liveness: ON"
+            cv2.putText(frame, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+            self._latest_frame = frame.copy()
+            cv2.imshow("Face Recognition System", frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+            elif key == ord("s"):
+                print("Session data saved to database.")
+            elif key == ord("r"):
+                print("\n[REGISTER] Enter name: ", end="", flush=True)
+                register_name = input().strip()
+                if register_name:
+                    success = self.engine.register_face_from_frame(frame, register_name)
+                    print(f"[REGISTER] {'Success!' if success else 'No face detected.'}")
+            elif key == ord("a"):
+                self._print_attendance()
+
+        # Cleanup
+        self._running = False
+        cap.release()
+        self._video_capture = None
+        cv2.destroyAllWindows()
+
+        if self.attendance.auto_export:
+            self.attendance.export_attendance()
+        self._print_session_stats(frame_count)
+
+    def run_web(self, host=None, port=None):
+        """Start the Flask web dashboard."""
+        from api.web_app import create_app
+        web_cfg = self.config.section("web")
+        host = host or web_cfg.get("host", "0.0.0.0")
+        port = port or web_cfg.get("port", 5000)
+
+        app = create_app(self, self.config)
+
+        cam_thread = threading.Thread(target=self._background_recognition, daemon=True)
+        cam_thread.start()
+
+        print(f"\nWeb dashboard: http://{host}:{port}")
+        app.run(host=host, port=port, debug=False, threaded=True)
+
+    def _background_recognition(self):
+        """Run recognition loop in background for web mode."""
+        import face_recognition as fr
+
+        camera_index = self.config.get("camera", "index", default=0)
+        cap = self._open_camera(camera_index)
+        if cap is None:
+            return
+        self._video_capture = cap
+
+        rec_cfg = self.config.section("recognition")
+        frame_scale = rec_cfg.get("frame_scale", 0.25)
+        skip_frames = rec_cfg.get("skip_frames", 2)
+        inv_scale = int(1 / frame_scale)
+
+        self._running = True
+        process_counter = 0
+        tracked_objects = {}
+
+        while self._running:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            process_counter += 1
+            if process_counter >= skip_frames:
+                process_counter = 0
+                small = cv2.resize(frame, (0, 0), fx=frame_scale, fy=frame_scale)
+                rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+
+                raw_locs = fr.face_locations(rgb_small, model=self.engine.model)
+                valid = [(t, r, b, l) for (t, r, b, l) in raw_locs
+                         if (r - l) * inv_scale >= self.engine.min_face_size
+                         and (b - t) * inv_scale >= self.engine.min_face_size]
+
+                encs = fr.face_encodings(rgb_small, valid)
+                names, confs = [], []
+                for enc in encs:
+                    n, c, d = self.engine.recognize_face(enc)
+                    names.append(n)
+                    confs.append(c)
+
+                full_locs = [(t * inv_scale, r * inv_scale, b * inv_scale, l * inv_scale)
+                             for (t, r, b, l) in valid]
+                tracked_objects = self.tracker.update(full_locs, names, confs)
+
+                for n, c in zip(names, confs):
+                    if n != "Unknown":
+                        self.db.log_detection(n, c, camera_index=camera_index)
+                        self.attendance.mark_attendance(n, c)
+
+            # Draw
+            for obj_id, (bbox, name, conf) in tracked_objects.items():
+                top, right, bottom, left = bbox
+                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                label = f"{name} ({conf:.0%})" if name != "Unknown" else "Unknown"
+                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
+                cv2.putText(frame, label, (left + 6, bottom - 6),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
+
+            self._latest_frame = frame.copy()
+
+        cap.release()
+        self._video_capture = None
+
+    def _open_camera(self, camera_index):
+        """Try opening camera with multiple backends."""
+        backends = [cv2.CAP_ANY, cv2.CAP_DSHOW, cv2.CAP_AVFOUNDATION, cv2.CAP_V4L2]
         for backend in backends:
             try:
                 cap = cv2.VideoCapture(camera_index, backend)
-                
                 if cap.isOpened():
-                    # Test if we can actually read a frame
                     ret, frame = cap.read()
                     if ret:
-                        video_capture = cap
-                        print(f"✅ Camera opened successfully")
-                        break
-                    else:
-                        cap.release()
+                        w = self.config.get("camera", "width", default=640)
+                        h = self.config.get("camera", "height", default=480)
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                        print(f"Camera {camera_index} opened successfully")
+                        return cap
+                    cap.release()
                 else:
                     cap.release()
-            except Exception as e:
+            except Exception:
                 continue
-        
-        if video_capture is None or not video_capture.isOpened():
-            print("\n❌ ERROR: Could not open webcam!")
-            print("\nTroubleshooting steps:")
-            print("1. Run 'python webcam_test.py' to diagnose the issue")
-            print("2. Close other apps using the camera (Zoom, Teams, etc.)")
-            print("3. Check camera permissions in your OS settings")
-            print("4. Try different camera indices: system.run(camera_index=1)")
-            return
-        
-        print("\n=== Face Recognition System Started ===")
-        print(f"Threshold: {self.threshold}")
-        print(f"Known faces: {len(self.known_face_names)}")
-        print("Press 'q' to quit, 's' to save logs")
-        print("=" * 40 + "\n")
-        
-        process_this_frame = True
-        frame_count = 0
-        
-        while True:
-            ret, frame = video_capture.read()
-            if not ret:
-                break
-            
-            frame_count += 1
-            
-            if process_this_frame:
-                # Resize for faster processing
-                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-                
-                # Detect faces
-                face_locations = face_recognition.face_locations(rgb_small_frame)
-                
-                # Filter by minimum size
-                valid_faces = []
-                for (top, right, bottom, left) in face_locations:
-                    face_width = (right - left) * 4
-                    face_height = (bottom - top) * 4
-                    if face_width >= self.min_face_size and face_height >= self.min_face_size:
-                        valid_faces.append((top, right, bottom, left))
-                
-                face_locations = valid_faces
-                
-                # Generate encodings
-                face_encodings = face_recognition.face_encodings(
-                    rgb_small_frame, face_locations
-                )
-                
-                face_names = []
-                face_confidences = []
-                
-                for face_encoding in face_encodings:
-                    name, confidence, distance = self.recognize_face(face_encoding)
-                    face_names.append(name)
-                    face_confidences.append(confidence)
-                    
-                    # Log recognized faces (not "Unknown")
-                    if name != "Unknown":
-                        self.log_detection(name, confidence, datetime.now())
-            
-            process_this_frame = not process_this_frame
-            
-            # Display results
-            for (top, right, bottom, left), name, conf in zip(
-                face_locations, face_names, face_confidences
-            ):
-                # Scale back up
-                top *= 4
-                right *= 4
-                bottom *= 4
-                left *= 4
-                
-                # Choose color based on recognition
-                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
-                
-                # Draw box
-                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                
-                # Prepare label
-                if name != "Unknown":
-                    label = f"{name} ({conf:.2f})"
-                else:
-                    label = "Unknown"
-                
-                # Draw label background
-                cv2.rectangle(frame, (left, bottom - 35), 
-                            (right, bottom), color, cv2.FILLED)
-                cv2.putText(frame, label, (left + 6, bottom - 6),
-                          cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
-            
-            # Add info overlay
-            info_text = f"Faces: {len(face_locations)} | Frame: {frame_count}"
-            cv2.putText(frame, info_text, (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            cv2.imshow('Face Recognition System', frame)
-            
-            # Handle key presses
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
-            elif key == ord('s'):
-                self.save_logs()
-                print("Logs saved!")
-        
-        # Cleanup
-        video_capture.release()
-        cv2.destroyAllWindows()
-        
-        # Final statistics
-        print("\n=== Session Statistics ===")
-        print(f"Total frames processed: {frame_count}")
-        print(f"Total detections logged: {len(self.detection_log)}")
-        
-        if self.detection_log:
-            unique_people = set(log['name'] for log in self.detection_log)
-            print(f"Unique people detected: {len(unique_people)}")
-            print(f"People: {', '.join(unique_people)}")
+        print("\nERROR: Could not open webcam!")
+        print("Run 'python webcam_test.py' to diagnose.")
+        return None
+
+    def _print_attendance(self):
+        records = self.attendance.get_today_attendance()
+        print(f"\n{'=' * 40}")
+        print(f"  Attendance - {datetime.now().strftime('%Y-%m-%d')}")
+        print(f"{'=' * 40}")
+        if records:
+            for r in records:
+                co = r.get("check_out") or "Present"
+                if co != "Present":
+                    co = co[:19]
+                print(f"  {r['name']:20s} In: {r['check_in'][:19]}  Out: {co}")
+        else:
+            print("  No attendance records today.")
+        print(f"{'=' * 40}\n")
+
+    def _print_session_stats(self, frame_count):
+        print(f"\n{'=' * 50}")
+        print("  Session Statistics")
+        print(f"{'=' * 50}")
+        print(f"  Frames processed : {frame_count}")
+        stats = self.db.get_detection_stats()
+        total = sum(s["count"] for s in stats) if stats else 0
+        print(f"  Total detections : {total}")
+        if stats:
+            print(f"  People detected  : {len(stats)}")
+            for s in stats:
+                print(f"    {s['name']:20s} x{s['count']}  (avg conf: {s['avg_confidence']:.0%})")
+        attendance = self.attendance.get_today_attendance()
+        if attendance:
+            print(f"  Attendance today : {len(attendance)}")
+        print(f"{'=' * 50}\n")
+
+    def stop(self):
+        self._running = False
 
 
 if __name__ == "__main__":
-    # Initialize with custom settings
-    system = ProductionFaceRecognition(
-        known_faces_dir="known_faces",
-        threshold=0.6,        # Adjust for stricter/looser matching
-        min_face_size=50      # Minimum face size in pixels
-    )
-    
-    # Run the system with camera index 1
-    system.run(camera_index=1)
+    from cli import build_parser
+    args = build_parser().parse_args()
+
+    system = FaceRecognitionSystem(config_path=args.config)
+
+    # Override config with CLI args
+    if args.threshold is not None:
+        system.engine.threshold = args.threshold
+    if args.min_face_size is not None:
+        system.engine.min_face_size = args.min_face_size
+    if args.model:
+        system.engine.model = args.model
+    if args.no_liveness:
+        system.liveness.enabled = False
+    if args.no_tracking:
+        system.tracker.enabled = False
+    if args.no_attendance:
+        system.attendance.enabled = False
+
+    if args.export_attendance:
+        system.attendance.export_attendance(args.export_attendance)
+    elif args.web:
+        system.run_web(host=args.host, port=args.port)
+    else:
+        system.run(camera_index=args.camera)

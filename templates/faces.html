@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Manage Faces{% endblock %}
+{% block content %}
+<h1 style="margin-bottom: 1.5rem;">Manage Known Faces</h1>
+
+<div class="card">
+    <h2>Add New Face</h2>
+    <form action="/faces/add" method="POST" enctype="multipart/form-data">
+        <input type="text" name="name" placeholder="Person name" required>
+        <input type="file" name="image" accept="image/*" required>
+        <button type="submit" class="btn">Add Face</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Registered People ({{ persons|length }})</h2>
+    {% if persons %}
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Images</th>
+                <th>Registered</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in persons %}
+            <tr>
+                <td>{{ p.name }}</td>
+                <td>{{ p.get('images', p.get('image_count', 0)) }}</td>
+                <td>{{ p.created_at[:10] if p.created_at else 'N/A' }}</td>
+                <td>
+                    <form action="/faces/delete/{{ p.name }}" method="POST" style="display:inline"
+                          onsubmit="return confirm('Remove {{ p.name }}?')">
+                        <button type="submit" class="btn btn-danger" style="padding:0.3rem 0.8rem;font-size:0.8rem;">Remove</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#aaa;">No registered faces yet. Add someone above.</p>
+    {% endif %}
+</div>
+{% endblock %}
