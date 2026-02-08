@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Detection History{% endblock %}
+{% block content %}
+<h1 style="margin-bottom: 1.5rem;">Detection History</h1>
+
+{% if stats %}
+<div class="card">
+    <h2>Statistics</h2>
+    <table>
+        <thead>
+            <tr><th>Person</th><th>Total Detections</th><th>Avg Confidence</th><th>First Seen</th><th>Last Seen</th></tr>
+        </thead>
+        <tbody>
+            {% for s in stats %}
+            <tr>
+                <td>{{ s.name }}</td>
+                <td>{{ s.count }}</td>
+                <td>{{ "%.1f%%"|format(s.avg_confidence * 100) }}</td>
+                <td>{{ s.first_seen[:19] if s.first_seen else '' }}</td>
+                <td>{{ s.last_seen[:19] if s.last_seen else '' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<div class="card">
+    <h2>Recent Detections</h2>
+    {% if records %}
+    <table>
+        <thead>
+            <tr><th>Name</th><th>Confidence</th><th>Camera</th><th>Timestamp</th></tr>
+        </thead>
+        <tbody>
+            {% for r in records %}
+            <tr>
+                <td>{{ r.name }}</td>
+                <td>{{ "%.1f%%"|format(r.confidence * 100) }}</td>
+                <td>{{ r.camera_index }}</td>
+                <td>{{ r.timestamp[:19] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#aaa;">No detections recorded yet.</p>
+    {% endif %}
+</div>
+{% endblock %}
